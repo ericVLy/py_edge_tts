@@ -14,10 +14,11 @@ class TTSApp:
     def __init__(self, root):
         self.root = root
         self.root.title("文本转音频工具 (支持检索/TXT/HTML)")
-        self.root.geometry("800x500") # 加宽窗口以容纳搜索框
-        self.root.minsize(700, 400)
+        # 再次微调窗口大小以适应新加的进度条
+        self.root.geometry("850x500") 
+        self.root.minsize(750, 400)
 
-        # 用于保存完整的语音列表，过滤时作为数据源
+        # 用于保存完整的语音列表
         self.all_voice_names = []
 
         # UI 布局配置
@@ -30,16 +31,15 @@ class TTSApp:
         threading.Thread(target=self.load_voices_thread, daemon=True).start()
 
     def setup_ui(self):
-        # 顶部：功能按钮和语音选择区
+        # 顶部：功能按钮、语音选择和加载区
         top_frame = ttk.Frame(self.root, padding=10)
         top_frame.pack(fill=tk.X)
 
-        # --- 新增：关键字搜索框 ---
+        # --- 语音搜索 ---
         ttk.Label(top_frame, text="搜索语音:").pack(side=tk.LEFT, padx=(0, 5))
         self.search_var = tk.StringVar()
         self.search_entry = ttk.Entry(top_frame, textvariable=self.search_var, width=15)
         self.search_entry.pack(side=tk.LEFT, padx=(0, 10))
-        # 绑定键盘松开事件，每次输入或删除字符时触发过滤
         self.search_entry.bind('<KeyRelease>', self.filter_voices)
 
         ttk.Label(top_frame, text="选择:").pack(side=tk.LEFT, padx=(0, 5))
@@ -49,10 +49,25 @@ class TTSApp:
         self.voice_cb.pack(side=tk.LEFT, padx=(0, 15))
 
         self.btn_load = ttk.Button(top_frame, text="加载文件 (TXT/HTML)", command=self.load_file)
-        self.btn_load.pack(side=tk.LEFT, padx=(0, 5))
+        self.btn_load.pack(side=tk.LEFT, padx=(0, 15))
 
-        self.btn_generate = ttk.Button(top_frame, text="转换为 MP3 并保存", command=self.start_tts)
+        # --- 新增：执行按钮和动态加载进度条容器 ---
+        # 使用一个单独的 frame 包裹按钮和进度条，使它们紧密排列
+        generate_frame = ttk.Frame(top_frame)
+        generate_frame.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.btn_generate = ttk.Button(generate_frame, text="转换为 MP3 并保存", command=self.start_tts)
         self.btn_generate.pack(side=tk.LEFT)
+
+        # --- 新增：动态加载进度条 (Indeterminate mode) ---
+        # 初始 length 为 0，不显示，在布局中也不占位
+        self.loading_pbar = ttk.Progressbar(
+            generate_frame, 
+            orient=tk.HORIZONTAL, 
+            length=100, 
+            mode='indeterminate'
+        )
+        # 这里不立即 pack，等到执行任务时再 pack
 
         # 中部：文本输入区
         mid_frame = ttk.Frame(self.root, padding=10)
@@ -87,11 +102,8 @@ class TTSApp:
             self.root.after(0, self.show_error, f"获取语音列表失败: {e}")
 
     def update_voice_ui(self, voice_names):
-        # 保存完整数据源
         self.all_voice_names = voice_names
-        # 初始化下拉菜单
         self.voice_cb['values'] = self.all_voice_names
-        
         if voice_names:
             default_voice = 'zh-CN-XiaoxiaoNeural'
             if default_voice in voice_names:
@@ -103,25 +115,20 @@ class TTSApp:
         self.btn_generate.config(state=tk.NORMAL)
         self.search_entry.config(state=tk.NORMAL)
 
-    # --- 新增功能：根据关键字过滤语音 ---
+    # --- 功能：根据关键字过滤语音 ---
     def filter_voices(self, event=None):
         keyword = self.search_var.get().strip().lower()
-        
-        # 如果搜索框为空，恢复完整列表
         if not keyword:
             self.voice_cb['values'] = self.all_voice_names
         else:
-            # 忽略大小写进行匹配
             filtered_list = [v for v in self.all_voice_names if keyword in v.lower()]
             self.voice_cb['values'] = filtered_list
-            
-            # 过滤后，如果当前选中的项目不在新列表中，自动选择新列表的第一项
             current_selection = self.voice_var.get()
             if current_selection not in filtered_list:
                 if filtered_list:
                     self.voice_cb.set(filtered_list[0])
                 else:
-                    self.voice_cb.set('') # 没有匹配项时清空
+                    self.voice_cb.set('')
 
     # --- 功能 3: 读取 TXT/HTML 文件内容显示到文本框 ---
     def load_file(self):
@@ -158,11 +165,10 @@ class TTSApp:
                 self.text_area.delete("1.0", tk.END)
                 self.text_area.insert(tk.END, content)
                 self.status_var.set(f"已加载文件: {os.path.basename(filepath)}")
-                
             except Exception as e:
                 messagebox.showerror("读取错误", f"无法读取文件。\n错误信息: {e}")
 
-    # --- 功能 4: 获取文本内容并保存为 MP3 ---
+    # --- 功能 4 (增强): 执行 TTS 时显示动态效果 ---
     def start_tts(self):
         text = self.text_area.get("1.0", tk.END).strip()
         voice = self.voice_var.get()
@@ -180,28 +186,54 @@ class TTSApp:
             filetypes=[("MP3 Audio", "*.mp3")]
         )
         if filepath:
+            # 1. 禁用 UI 元素防止误操作
             self.btn_generate.config(state=tk.DISABLED)
-            self.status_var.set("正在将文本转写为音频，请稍候...")
+            self.btn_load.config(state=tk.DISABLED)
+            self.search_entry.config(state=tk.DISABLED)
+            
+            # --- 新增：显示并启动动态加载效果 ---
+            # 将进度条 pack 到按钮旁边，加上 padding
+            self.loading_pbar.pack(side=tk.LEFT, padx=(10, 0)) 
+            self.loading_pbar.start(10) # 启动动画（参数表示动画更新频率，单位ms）
+            # -------------------------------
+            
+            self.status_var.set("正在将文本转写为音频，网络传输中...")
+            # 开启线程执行 TTS
             threading.Thread(target=self.run_tts_thread, args=(text, voice, filepath), daemon=True).start()
+
+    def stop_loading_effect(self):
+        """统一停止加载效果并恢复 UI 的方法"""
+        # --- 新增：停止并隐藏加载效果 ---
+        self.loading_pbar.stop()
+        self.loading_pbar.pack_forget() # 隐藏控件，不占位
+        # -------------------------------
+        
+        # 恢复 UI 元素状态
+        self.btn_generate.config(state=tk.NORMAL)
+        self.btn_load.config(state=tk.NORMAL)
+        self.search_entry.config(state=tk.NORMAL)
 
     def run_tts_thread(self, text, voice, filepath):
         try:
             asyncio.run(self.generate_audio(text, voice, filepath))
+            # 成功后在主线程恢复 UI
             self.root.after(0, self.tts_success)
         except Exception as e:
+            # 失败后在主线程恢复 UI 并显示错误
             self.root.after(0, self.show_error, f"生成音频失败:\n{e}")
 
     async def generate_audio(self, text, voice, filepath):
+        # 这里的 Communicate 在后台线程运行，save 方法包含网络请求
         communicate = edge_tts.Communicate(text, voice)
         await communicate.save(filepath)
 
     def tts_success(self):
-        self.btn_generate.config(state=tk.NORMAL)
+        self.stop_loading_effect() # 停止动态效果
         self.status_var.set("音频生成完毕！")
-        messagebox.showinfo("成功", "MP3 音频文件已成功保存！")
+        messagebox.showinfo("成功", f"MP3 音频文件已成功保存到：\n{os.path.basename(self.status_var.get())}")
 
     def show_error(self, error_msg):
-        self.btn_generate.config(state=tk.NORMAL)
+        self.stop_loading_effect() # 停止动态效果
         self.status_var.set("发生错误")
         messagebox.showerror("错误", error_msg)
 
