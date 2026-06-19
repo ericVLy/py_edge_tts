@@ -13,9 +13,12 @@ if sys.platform == 'win32':
 class TTSApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("文本转音频工具 (支持TXT/HTML)")
-        self.root.geometry("650x500")
-        self.root.minsize(500, 400)
+        self.root.title("文本转音频工具 (支持检索/TXT/HTML)")
+        self.root.geometry("800x500") # 加宽窗口以容纳搜索框
+        self.root.minsize(700, 400)
+
+        # 用于保存完整的语音列表，过滤时作为数据源
+        self.all_voice_names = []
 
         # UI 布局配置
         self.setup_ui()
@@ -23,6 +26,7 @@ class TTSApp:
         # 异步加载语音列表
         self.status_var.set("正在获取支持的语音类型，请稍候...")
         self.btn_generate.config(state=tk.DISABLED)
+        self.search_entry.config(state=tk.DISABLED)
         threading.Thread(target=self.load_voices_thread, daemon=True).start()
 
     def setup_ui(self):
@@ -30,13 +34,21 @@ class TTSApp:
         top_frame = ttk.Frame(self.root, padding=10)
         top_frame.pack(fill=tk.X)
 
-        ttk.Label(top_frame, text="语音类型:").pack(side=tk.LEFT, padx=(0, 5))
+        # --- 新增：关键字搜索框 ---
+        ttk.Label(top_frame, text="搜索语音:").pack(side=tk.LEFT, padx=(0, 5))
+        self.search_var = tk.StringVar()
+        self.search_entry = ttk.Entry(top_frame, textvariable=self.search_var, width=15)
+        self.search_entry.pack(side=tk.LEFT, padx=(0, 10))
+        # 绑定键盘松开事件，每次输入或删除字符时触发过滤
+        self.search_entry.bind('<KeyRelease>', self.filter_voices)
+
+        ttk.Label(top_frame, text="选择:").pack(side=tk.LEFT, padx=(0, 5))
         
         self.voice_var = tk.StringVar()
-        self.voice_cb = ttk.Combobox(top_frame, textvariable=self.voice_var, state="readonly", width=30)
+        self.voice_cb = ttk.Combobox(top_frame, textvariable=self.voice_var, state="readonly", width=25)
         self.voice_cb.pack(side=tk.LEFT, padx=(0, 15))
 
-        self.btn_load = ttk.Button(top_frame, text="加载 TXT / HTML", command=self.load_file)
+        self.btn_load = ttk.Button(top_frame, text="加载文件 (TXT/HTML)", command=self.load_file)
         self.btn_load.pack(side=tk.LEFT, padx=(0, 5))
 
         self.btn_generate = ttk.Button(top_frame, text="转换为 MP3 并保存", command=self.start_tts)
@@ -75,7 +87,11 @@ class TTSApp:
             self.root.after(0, self.show_error, f"获取语音列表失败: {e}")
 
     def update_voice_ui(self, voice_names):
-        self.voice_cb['values'] = voice_names
+        # 保存完整数据源
+        self.all_voice_names = voice_names
+        # 初始化下拉菜单
+        self.voice_cb['values'] = self.all_voice_names
+        
         if voice_names:
             default_voice = 'zh-CN-XiaoxiaoNeural'
             if default_voice in voice_names:
@@ -85,10 +101,30 @@ class TTSApp:
         
         self.status_var.set("语音列表加载完成，准备就绪。")
         self.btn_generate.config(state=tk.NORMAL)
+        self.search_entry.config(state=tk.NORMAL)
 
-    # --- 功能 3 (增强): 读取 TXT/HTML 文件内容显示到文本框 ---
+    # --- 新增功能：根据关键字过滤语音 ---
+    def filter_voices(self, event=None):
+        keyword = self.search_var.get().strip().lower()
+        
+        # 如果搜索框为空，恢复完整列表
+        if not keyword:
+            self.voice_cb['values'] = self.all_voice_names
+        else:
+            # 忽略大小写进行匹配
+            filtered_list = [v for v in self.all_voice_names if keyword in v.lower()]
+            self.voice_cb['values'] = filtered_list
+            
+            # 过滤后，如果当前选中的项目不在新列表中，自动选择新列表的第一项
+            current_selection = self.voice_var.get()
+            if current_selection not in filtered_list:
+                if filtered_list:
+                    self.voice_cb.set(filtered_list[0])
+                else:
+                    self.voice_cb.set('') # 没有匹配项时清空
+
+    # --- 功能 3: 读取 TXT/HTML 文件内容显示到文本框 ---
     def load_file(self):
-        # 更新文件类型过滤器，增加对 HTML 的支持
         filepath = filedialog.askopenfilename(
             title="选择文本或网页文件",
             filetypes=[
@@ -100,38 +136,25 @@ class TTSApp:
         )
         if filepath:
             try:
-                # 使用 utf-8 读取，并忽略无法解码的字符防止崩溃
                 with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read()
 
-                # 如果用户选择的是 HTML 文件，则进行纯文本提取
                 if filepath.lower().endswith(('.html', '.htm')):
                     try:
                         from bs4 import BeautifulSoup
-                        
-                        # 解析 HTML
                         soup = BeautifulSoup(content, 'html.parser')
-                        
-                        # 移除 script 和 style 标签（过滤掉JS代码和CSS样式）
                         for script in soup(["script", "style"]):
                             script.decompose()
-                            
-                        # 提取文本，并用换行符替代原本的块级标签
                         content = soup.get_text(separator='\n')
-                        
-                        # 清理多余的空白行和空格
                         lines = [line.strip() for line in content.splitlines() if line.strip()]
                         content = '\n'.join(lines)
-                        
                     except ImportError:
                         messagebox.showwarning(
                             "缺少依赖库", 
                             "检测到网页文件，但您尚未安装 BeautifulSoup4 库，无法自动提取网页纯文本。\n\n"
-                            "请在终端执行: pip install beautifulsoup4\n\n"
-                            "当前将强行加载原始的 HTML 源代码。"
+                            "请在终端执行: pip install beautifulsoup4"
                         )
 
-                # 清空文本框并插入处理后的内容
                 self.text_area.delete("1.0", tk.END)
                 self.text_area.insert(tk.END, content)
                 self.status_var.set(f"已加载文件: {os.path.basename(filepath)}")
@@ -181,7 +204,6 @@ class TTSApp:
         self.btn_generate.config(state=tk.NORMAL)
         self.status_var.set("发生错误")
         messagebox.showerror("错误", error_msg)
-
 
 if __name__ == "__main__":
     root = tk.Tk()
