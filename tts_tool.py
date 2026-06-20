@@ -4,11 +4,14 @@ import asyncio
 import threading
 import sys
 import os
+import json
 import edge_tts
 
-# 解决 Windows 环境下 asyncio 可能会报错的问题
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# 配置文件路径
+CONFIG_FILE = "tts_config.json"
 
 class TTSApp:
     def __init__(self, root):
@@ -18,20 +21,26 @@ class TTSApp:
         self.root.geometry("850x500") 
         self.root.minsize(750, 400)
 
-        # 用于保存完整的语音列表
         self.all_voice_names = []
 
         # UI 布局配置
         self.setup_ui()
         
+        # 进程启动，先尝试读取本地的历史搜索词（用来在 UI 加载时填充）
+        self.saved_config = self.load_config()
+        if self.saved_config.get("search_keyword"):
+            self.search_var.set(self.saved_config["search_keyword"])
+
         # 异步加载语音列表
         self.status_var.set("正在获取支持的语音类型，请稍候...")
         self.btn_generate.config(state=tk.DISABLED)
         self.search_entry.config(state=tk.DISABLED)
         threading.Thread(target=self.load_voices_thread, daemon=True).start()
 
+        # 绑定窗口关闭事件，退出时也自动保存一次配置
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
     def setup_ui(self):
-        # 顶部：功能按钮、语音选择和加载区
         top_frame = ttk.Frame(self.root, padding=10)
         top_frame.pack(fill=tk.X)
 
@@ -92,7 +101,30 @@ class TTSApp:
         status_label = ttk.Label(bottom_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding=2)
         status_label.pack(fill=tk.X)
 
-    # --- 功能 1 & 2: 获取支持的语音并在下拉菜单中显示 ---
+    # --- 新增功能：JSON 配置文件的读取与写入 ---
+    def load_config(self):
+        """从本地读取 JSON 配置文件"""
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                return {}
+        return {}
+
+    def save_config_to_file(self):
+        """将当前配置写入本地 JSON 文件"""
+        config_data = {
+            "voice": self.voice_var.get(),
+            "search_keyword": self.search_var.get().strip()
+        }
+        try:
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(config_data, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(f"存储配置文件失败: {e}")
+
+    # --- 语音列表加载与记忆恢复 ---
     def load_voices_thread(self):
         try:
             voices = asyncio.run(edge_tts.list_voices())
@@ -103,19 +135,26 @@ class TTSApp:
 
     def update_voice_ui(self, voice_names):
         self.all_voice_names = voice_names
-        self.voice_cb['values'] = self.all_voice_names
-        if voice_names:
-            default_voice = 'zh-CN-XiaoxiaoNeural'
-            if default_voice in voice_names:
-                self.voice_cb.set(default_voice)
-            else:
-                self.voice_cb.set(voice_names[0])
         
-        self.status_var.set("语音列表加载完成，准备就绪。")
+        # 1. 恢复列表并根据搜索框历史词触发一次过滤
+        self.filter_voices()
+        
+        # 2. 尝试恢复上次使用的具体语音类型
+        saved_voice = self.saved_config.get("voice")
+        # 必须确保上次存的语音现在依然在当前的下拉菜单可用选项里
+        if saved_voice and saved_voice in self.voice_cb['values']:
+            self.voice_cb.set(saved_voice)
+        elif self.voice_cb['values']:
+            # 如果没找到，且经过过滤后列表不为空，默认选第一个
+            if 'zh-CN-XiaoxiaoNeural' in self.voice_cb['values']:
+                self.voice_cb.set('zh-CN-XiaoxiaoNeural')
+            else:
+                self.voice_cb.set(self.voice_cb['values'][0])
+        
+        self.status_var.set("语音列表加载完成，已恢复历史配置。")
         self.btn_generate.config(state=tk.NORMAL)
         self.search_entry.config(state=tk.NORMAL)
 
-    # --- 功能：根据关键字过滤语音 ---
     def filter_voices(self, event=None):
         keyword = self.search_var.get().strip().lower()
         if not keyword:
@@ -186,13 +225,12 @@ class TTSApp:
             filetypes=[("MP3 Audio", "*.mp3")]
         )
         if filepath:
-            # 1. 禁用 UI 元素防止误操作
+            # 触发保存机制：用户点击生成时，立刻记住当前选择
+            self.save_config_to_file()
+
             self.btn_generate.config(state=tk.DISABLED)
             self.btn_load.config(state=tk.DISABLED)
             self.search_entry.config(state=tk.DISABLED)
-            
-            # --- 新增：显示并启动动态加载效果 ---
-            # 将进度条 pack 到按钮旁边，加上 padding
             self.loading_pbar.pack(side=tk.LEFT, padx=(10, 0)) 
             self.loading_pbar.start(10) # 启动动画（参数表示动画更新频率，单位ms）
             # -------------------------------
@@ -202,8 +240,6 @@ class TTSApp:
             threading.Thread(target=self.run_tts_thread, args=(text, voice, filepath), daemon=True).start()
 
     def stop_loading_effect(self):
-        """统一停止加载效果并恢复 UI 的方法"""
-        # --- 新增：停止并隐藏加载效果 ---
         self.loading_pbar.stop()
         self.loading_pbar.pack_forget() # 隐藏控件，不占位
         # -------------------------------
@@ -216,14 +252,11 @@ class TTSApp:
     def run_tts_thread(self, text, voice, filepath):
         try:
             asyncio.run(self.generate_audio(text, voice, filepath))
-            # 成功后在主线程恢复 UI
             self.root.after(0, self.tts_success)
         except Exception as e:
-            # 失败后在主线程恢复 UI 并显示错误
             self.root.after(0, self.show_error, f"生成音频失败:\n{e}")
 
     async def generate_audio(self, text, voice, filepath):
-        # 这里的 Communicate 在后台线程运行，save 方法包含网络请求
         communicate = edge_tts.Communicate(text, voice)
         await communicate.save(filepath)
 
@@ -236,6 +269,11 @@ class TTSApp:
         self.stop_loading_effect() # 停止动态效果
         self.status_var.set("发生错误")
         messagebox.showerror("错误", error_msg)
+
+    def on_closing(self):
+        """窗口关闭时触发的善后工作"""
+        self.save_config_to_file() # 再次确保退出时记录了最新的选项
+        self.root.destroy()
 
 if __name__ == "__main__":
     root = tk.Tk()
