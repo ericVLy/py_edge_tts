@@ -55,7 +55,7 @@ python tts_tool.py
 
 ## 📦 独立可执行文件 (EXE) 打包
 
-如果你希望将程序打包为无需安装 Python 环境即可独立运行的 `.exe` 文件，可以使用 `PyInstaller`。
+如果你需要无需安装 Python 环境即可独立运行的 `.exe` 文件，可以直接从`Release`下载最新版本，也可以使用 `PyInstaller`手动构建。
 
 ### 1. 安装 PyInstaller
 
