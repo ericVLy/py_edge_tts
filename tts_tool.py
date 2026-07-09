@@ -107,44 +107,65 @@ class TTSApp:
         self.paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         self.paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # 左面板：行号 + 编辑区
+        # ---- 左面板：行号 + 文本编辑区（带滚动条） ----
         left_frame = ttk.Frame(self.paned)
         self.paned.add(left_frame, weight=1)
 
+        # 行号栏（无滚动条，随文本区联动）
         self.line_numbers = tk.Text(left_frame, width=4, padx=4, takefocus=0, border=0,
                                     background='#f0f0f0', state='disabled', wrap='none')
         self.line_numbers.pack(side=tk.LEFT, fill=tk.Y)
 
-        text_frame = ttk.Frame(left_frame)
-        text_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # 文本区容器
+        text_container = ttk.Frame(left_frame)
+        text_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self.text_area = tk.Text(text_frame, wrap=tk.WORD, font=("Microsoft YaHei", 10),
-                                 undo=True, yscrollcommand=self._on_text_scroll)
+        self.text_area = tk.Text(text_container, wrap=tk.WORD, font=("Microsoft YaHei", 10),
+                                 undo=True)
         self.text_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        scrollbar = ttk.Scrollbar(text_frame, command=self.text_area.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.text_area.configure(yscrollcommand=self._on_text_scroll)
+        # 文本区滚动条（自定义命令实现联动）
+        text_scrollbar = ttk.Scrollbar(text_container, command=self._text_scroll_cmd)
+        self.text_area.configure(yscrollcommand=text_scrollbar.set)
+        text_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
+        # 绑定文本区的鼠标滚轮事件
+        self.text_area.bind('<MouseWheel>', self._on_mousewheel)
+        self.text_area.bind('<Button-4>', self._on_mousewheel)
+        self.text_area.bind('<Button-5>', self._on_mousewheel)
+        # 文本内容变化（更新行号和预览）
         self.text_area.bind('<KeyRelease>', self._on_text_change)
-        self.text_area.bind('<MouseWheel>', self._on_text_scroll)
-        self.text_area.bind('<Button-4>', self._on_text_scroll)
-        self.text_area.bind('<Button-5>', self._on_text_scroll)
         self.text_area.bind('<Configure>', self._on_text_configure)
 
-        # 右面板：Markdown 预览
+        # ---- 右面板：Markdown 预览（带滚动条） ----
         right_frame = ttk.Frame(self.paned)
         self.paned.add(right_frame, weight=1)
 
         ttk.Label(right_frame, text="实时预览").pack(anchor=tk.W, pady=(0, 5))
+
+        preview_container = ttk.Frame(right_frame)
+        preview_container.pack(fill=tk.BOTH, expand=True)
+
         if HAS_MARKDOWN:
-            self.preview = HTMLLabel(right_frame, html="<p style='color:gray;'>输入文本后实时预览</p>",
+            self.preview = HTMLLabel(preview_container, html="<p style='color:gray;'>输入文本后实时预览</p>",
                                      background='white', padx=5, pady=5)
         else:
-            self.preview = tk.Text(right_frame, wrap=tk.WORD, background='white', font=("Microsoft YaHei", 10))
+            self.preview = tk.Text(preview_container, wrap=tk.WORD, background='white',
+                                   font=("Microsoft YaHei", 10))
             self.preview.insert('1.0', "请安装 markdown 和 tkhtmlview 以启用 Markdown 预览")
             self.preview.config(state='disabled')
-        self.preview.pack(fill=tk.BOTH, expand=True)
+
+        self.preview.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # 预览区滚动条（自定义命令实现联动）
+        preview_scrollbar = ttk.Scrollbar(preview_container, command=self._preview_scroll_cmd)
+        self.preview.configure(yscrollcommand=preview_scrollbar.set)
+        preview_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 绑定预览区的鼠标滚轮事件
+        self.preview.bind('<MouseWheel>', self._on_mousewheel)
+        self.preview.bind('<Button-4>', self._on_mousewheel)
+        self.preview.bind('<Button-5>', self._on_mousewheel)
 
         # ---- 底部状态栏 ----
         bottom_frame = ttk.Frame(self.root)
@@ -154,7 +175,60 @@ class TTSApp:
         status_label = ttk.Label(bottom_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding=2)
         status_label.pack(fill=tk.X)
 
-    # ---------- 配置读写 ----------
+    # ========== 滚动同步核心方法 ==========
+    def _text_scroll_cmd(self, *args):
+        """文本区滚动条的命令：控制文本区滚动，然后同步其他区域"""
+        self.text_area.yview(*args)
+        self._sync_all_from_text()
+
+    def _preview_scroll_cmd(self, *args):
+        """预览区滚动条的命令：控制预览区滚动，然后同步其他区域"""
+        self.preview.yview(*args)
+        self._sync_all_from_preview()
+
+    def _on_mousewheel(self, event):
+        """鼠标滚轮事件处理：由触发控件执行滚动后，延迟同步其他控件"""
+        # 让触发控件先执行滚动（默认已经完成），然后同步
+        self.root.after_idle(self._sync_all_from, event.widget)
+
+    def _sync_all_from(self, source):
+        """根据源控件（文本区或预览区）同步所有控件"""
+        if source is self.text_area:
+            self._sync_all_from_text()
+        elif source is self.preview:
+            self._sync_all_from_preview()
+        # 行号栏本身不会触发滚动，但会被同步
+
+    def _sync_all_from_text(self):
+        frac = self.text_area.yview()[0]
+        self.line_numbers.yview_moveto(frac)
+        self.preview.yview_moveto(frac)
+
+    def _sync_all_from_preview(self):
+        frac = self.preview.yview()[0]
+        self.text_area.yview_moveto(frac)
+        self.line_numbers.yview_moveto(frac)
+
+    # ---------- 行号更新（仅更新内容，不移动位置） ----------
+    def _update_line_numbers(self):
+        line_count = int(self.text_area.index('end-1c').split('.')[0])
+        lines = '\n'.join(str(i) for i in range(1, line_count + 1))
+        self.line_numbers.config(state='normal')
+        self.line_numbers.delete('1.0', tk.END)
+        self.line_numbers.insert('1.0', lines)
+        self.line_numbers.config(state='disabled')
+        # 保持行号栏与文本区同一垂直位置
+        self.line_numbers.yview_moveto(self.text_area.yview()[0])
+
+    def _on_text_configure(self, event=None):
+        """当文本区大小变化时，更新行号（例如窗口缩放）"""
+        self._update_line_numbers()
+
+    # ---------- 其余功能保持不变（配置、语音、文件加载、TTS、预览等） ----------
+    # 为节省篇幅，以下方法省略（与之前版本相同，但需要保留），此处只做简要占位
+    # 实际使用时请粘贴之前版本的完整实现
+
+    # ---------- 以下是原有方法的占位（实际需保留完整功能） ----------
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
             try:
@@ -342,8 +416,9 @@ class TTSApp:
         filepath = filedialog.askopenfilename(
             title="选择文本、网页或 Word 文档",
             filetypes=[
-                ("支持的文件", "*.txt;*.html;*.htm;*.docx"),
+                ("支持的文件", "*.txt;*.md;*.html;*.htm;*.docx"),
                 ("Text Files", "*.txt"),
+                ("Markdown Files", "*.md"),
                 ("HTML Files", "*.html;*.htm"),
                 ("Word Documents", "*.docx"),
                 ("All Files", "*.*")
@@ -364,23 +439,6 @@ class TTSApp:
         except Exception as e:
             logprint.error(f"加载文件异常: {e}", exc_info=True)
             messagebox.showerror("读取错误", f"无法读取文件。\n错误信息: {e}")
-
-    # ---------- 行号同步 ----------
-    def _on_text_scroll(self, *args):
-        self.line_numbers.yview_moveto(self.text_area.yview()[0])
-        self._update_line_numbers()
-
-    def _on_text_configure(self, event=None):
-        self._update_line_numbers()
-
-    def _update_line_numbers(self):
-        line_count = int(self.text_area.index('end-1c').split('.')[0])
-        lines = '\n'.join(str(i) for i in range(1, line_count + 1))
-        self.line_numbers.config(state='normal')
-        self.line_numbers.delete('1.0', tk.END)
-        self.line_numbers.insert('1.0', lines)
-        self.line_numbers.config(state='disabled')
-        self.line_numbers.yview_moveto(self.text_area.yview()[0])
 
     # ---------- Markdown 预览 ----------
     def _on_text_change(self, event=None):
@@ -418,36 +476,22 @@ class TTSApp:
         从 Markdown 文本中去除所有格式标记，只保留纯文本内容。
         """
         original_len = len(text)
-        # 移除代码块
         text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
-        # 行内代码
         text = re.sub(r'`([^`]+)`', r'\1', text)
-        # 图片
         text = re.sub(r'!\[([^\]]*)\]\([^)]*\)', r'\1', text)
-        # 链接
         text = re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', text)
-        # 粗体
         text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
         text = re.sub(r'__(.+?)__', r'\1', text)
-        # 斜体
         text = re.sub(r'\*(.+?)\*', r'\1', text)
         text = re.sub(r'_(.+?)_', r'\1', text)
-        # 删除线
         text = re.sub(r'~~(.+?)~~', r'\1', text)
-        # 标题标记
         text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)
-        # 列表标记
         text = re.sub(r'^[\-\*\+]\s+', '', text, flags=re.MULTILINE)
         text = re.sub(r'^\d+\.\s+', '', text, flags=re.MULTILINE)
-        # 引用
         text = re.sub(r'^>\s+', '', text, flags=re.MULTILINE)
-        # 脚注
         text = re.sub(r'\[\^.+?\]', '', text)
-        # 水平线
         text = re.sub(r'^[\-\*]{3,}\s*$', '', text, flags=re.MULTILINE)
-        # 表格分隔线
         text = re.sub(r'^\|[\s\-:]+\|$', '', text, flags=re.MULTILINE)
-        # 多余空行
         text = re.sub(r'\n{3,}', '\n\n', text)
         cleaned = text.strip()
         logprint.info(f"去除 Markdown 标记: 原长度 {original_len}, 新长度 {len(cleaned)}")
@@ -460,7 +504,6 @@ class TTSApp:
             logprint.warning("用户尝试生成音频但文本框为空")
             messagebox.showwarning("提示", "文本框为空，请输入文本或加载文件。")
             return
-
         voice = self.voice_var.get()
         if not voice:
             logprint.warning("用户未选择语音")
