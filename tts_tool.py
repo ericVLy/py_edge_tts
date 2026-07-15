@@ -1,3 +1,7 @@
+""" TTS Tool - A GUI application for converting text to audio using Microsoft Edge TTS.
+This application allows users to load text, HTML, or Word documents, 
+preview the content in Markdown format, 
+and generate MP3 audio files using selected voices. Features:"""
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import asyncio
@@ -45,10 +49,15 @@ if sys.platform == 'win32':
 CONFIG_FILE = "tts_config.json"
 
 
-class TTSApp:
-    def __init__(self, root):
+class TTSApp:  # pylint: disable=too-many-instance-attributes
+    """文本转音频工具主应用程序。
+
+    负责构建 GUI、加载文件、渲染 Markdown 预览并生成 MP3 音频。
+    """
+
+    def __init__(self, master):
         logprint.info("应用程序启动")
-        self.root = root
+        self.root = master
         self.root.title("文本转音频工具")
         self.root.geometry("1100x600")
         self.root.minsize(900, 500)
@@ -56,6 +65,18 @@ class TTSApp:
         self.all_voice_names = []
         self.current_filepath = None
         self.preview_after_id = None
+        self.search_var = tk.StringVar()
+        self.search_entry = None
+        self.voice_var = tk.StringVar()
+        self.voice_cb = None
+        self.btn_load = None
+        self.btn_generate = None
+        self.loading_pbar = None
+        self.paned = None
+        self.line_numbers = None
+        self.text_area = None
+        self.preview = None
+        self.status_var = tk.StringVar()
 
         self.setup_ui()
         self.saved_config = self.load_config()
@@ -73,7 +94,12 @@ class TTSApp:
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def setup_ui(self):
-        # ---- 顶部控制栏 ----
+        """创建并布置应用程序的 UI 组件。"""
+        self._create_top_bar()
+        self._create_text_preview_panes()
+        self._create_status_bar()
+
+    def _create_top_bar(self):
         top_frame = ttk.Frame(self.root, padding=10)
         top_frame.pack(fill=tk.X)
 
@@ -84,8 +110,10 @@ class TTSApp:
         self.search_entry.bind('<KeyRelease>', self.filter_voices)
 
         ttk.Label(top_frame, text="选择:").pack(side=tk.LEFT, padx=(0, 5))
-        self.voice_var = tk.StringVar()
-        self.voice_cb = ttk.Combobox(top_frame, textvariable=self.voice_var, state="readonly", width=25)
+        self.voice_cb = ttk.Combobox(top_frame, 
+                                     textvariable=self.voice_var, 
+                                     state="readonly", 
+                                     width=25)
         self.voice_cb.pack(side=tk.LEFT, padx=(0, 15))
 
         self.btn_load = ttk.Button(top_frame, text="加载文件 (TXT/HTML/docx)", command=self.load_file)
@@ -103,41 +131,46 @@ class TTSApp:
             mode='indeterminate'
         )
 
-        # ---- 中部：水平分割 ----
+    def _create_text_preview_panes(self):
         self.paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         self.paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # ---- 左面板：行号 + 文本编辑区（带滚动条） ----
         left_frame = ttk.Frame(self.paned)
         self.paned.add(left_frame, weight=1)
 
-        # 行号栏（无滚动条，随文本区联动）
-        self.line_numbers = tk.Text(left_frame, width=4, padx=4, takefocus=0, border=0,
-                                    background='#f0f0f0', state='disabled', wrap='none')
+        self.line_numbers = tk.Text(
+            left_frame,
+            width=4,
+            padx=4,
+            takefocus=0,
+            border=0,
+            background='#f0f0f0',
+            state='disabled',
+            wrap='none'
+        )
         self.line_numbers.pack(side=tk.LEFT, fill=tk.Y)
 
-        # 文本区容器
         text_container = ttk.Frame(left_frame)
         text_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self.text_area = tk.Text(text_container, wrap=tk.WORD, font=("Microsoft YaHei", 10),
-                                 undo=True)
+        self.text_area = tk.Text(
+            text_container,
+            wrap=tk.WORD,
+            font=("Microsoft YaHei", 10),
+            undo=True
+        )
         self.text_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # 文本区滚动条（自定义命令实现联动）
         text_scrollbar = ttk.Scrollbar(text_container, command=self._text_scroll_cmd)
         self.text_area.configure(yscrollcommand=text_scrollbar.set)
         text_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # 绑定文本区的鼠标滚轮事件
         self.text_area.bind('<MouseWheel>', self._on_mousewheel)
         self.text_area.bind('<Button-4>', self._on_mousewheel)
         self.text_area.bind('<Button-5>', self._on_mousewheel)
-        # 文本内容变化（更新行号和预览）
         self.text_area.bind('<KeyRelease>', self._on_text_change)
         self.text_area.bind('<Configure>', self._on_text_configure)
 
-        # ---- 右面板：Markdown 预览（带滚动条） ----
         right_frame = ttk.Frame(self.paned)
         self.paned.add(right_frame, weight=1)
 
@@ -147,32 +180,45 @@ class TTSApp:
         preview_container.pack(fill=tk.BOTH, expand=True)
 
         if HAS_MARKDOWN:
-            self.preview = HTMLLabel(preview_container, html="<p style='color:gray;'>输入文本后实时预览</p>",
-                                     background='white', padx=5, pady=5)
+            self.preview = HTMLLabel(
+                preview_container,
+                html="<p style='color:gray;'>输入文本后实时预览</p>",
+                background='white',
+                padx=5,
+                pady=5
+            )
         else:
-            self.preview = tk.Text(preview_container, wrap=tk.WORD, background='white',
-                                   font=("Microsoft YaHei", 10))
+            self.preview = tk.Text(
+                preview_container,
+                wrap=tk.WORD,
+                background='white',
+                font=("Microsoft YaHei", 10)
+            )
             self.preview.insert('1.0', "请安装 markdown 和 tkhtmlview 以启用 Markdown 预览")
             self.preview.config(state='disabled')
 
         self.preview.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # 预览区滚动条（自定义命令实现联动）
         preview_scrollbar = ttk.Scrollbar(preview_container, command=self._preview_scroll_cmd)
         self.preview.configure(yscrollcommand=preview_scrollbar.set)
         preview_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # 绑定预览区的鼠标滚轮事件
         self.preview.bind('<MouseWheel>', self._on_mousewheel)
         self.preview.bind('<Button-4>', self._on_mousewheel)
         self.preview.bind('<Button-5>', self._on_mousewheel)
 
-        # ---- 底部状态栏 ----
+    def _create_status_bar(self):
         bottom_frame = ttk.Frame(self.root)
         bottom_frame.pack(fill=tk.X, side=tk.BOTTOM)
-        self.status_var = tk.StringVar()
+        # status_var is initialized in __init__
         self.status_var.set("就绪")
-        status_label = ttk.Label(bottom_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding=2)
+        status_label = ttk.Label(
+            bottom_frame,
+            textvariable=self.status_var,
+            relief=tk.SUNKEN,
+            anchor=tk.W,
+            padding=2
+        )
         status_label.pack(fill=tk.X)
 
     # ========== 滚动同步核心方法 ==========
@@ -211,7 +257,7 @@ class TTSApp:
 
     # ---------- 行号更新（仅更新内容，不移动位置） ----------
     def _update_line_numbers(self):
-        line_count = int(self.text_area.index('end-1c').split('.')[0])
+        line_count = int(self.text_area.index('end-1c').split('.', maxsplit=1)[0])
         lines = '\n'.join(str(i) for i in range(1, line_count + 1))
         self.line_numbers.config(state='normal')
         self.line_numbers.delete('1.0', tk.END)
@@ -220,7 +266,7 @@ class TTSApp:
         # 保持行号栏与文本区同一垂直位置
         self.line_numbers.yview_moveto(self.text_area.yview()[0])
 
-    def _on_text_configure(self, event=None):
+    def _on_text_configure(self, _event=None):
         """当文本区大小变化时，更新行号（例如窗口缩放）"""
         self._update_line_numbers()
 
@@ -230,16 +276,22 @@ class TTSApp:
 
     # ---------- 以下是原有方法的占位（实际需保留完整功能） ----------
     def load_config(self):
+        """Load saved configuration from disk.
+
+        Returns:
+            dict: The configuration dictionary, or an empty dict if loading fails.
+        """
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except Exception as e:
-                logprint.error(f"加载配置文件失败: {e}")
+            except (IOError, OSError, json.JSONDecodeError) as e:
+                logprint.error("加载配置文件失败: %s", e)
                 return {}
         return {}
 
     def save_config_to_file(self):
+        """Save current settings to the configuration file."""
         config_data = {
             "voice": self.voice_var.get(),
             "search_keyword": self.search_var.get().strip()
@@ -248,22 +300,24 @@ class TTSApp:
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
                 json.dump(config_data, f, ensure_ascii=False, indent=4)
             logprint.debug("配置已保存")
-        except Exception as e:
-            logprint.error(f"存储配置文件失败: {e}")
+        except (IOError, OSError, TypeError) as e:
+            logprint.error("存储配置文件失败: %s", e)
 
     # ---------- 语音加载 ----------
     def load_voices_thread(self):
+        """线程中加载语音列表并更新界面。"""
         logprint.info("开始获取语音列表")
         try:
             voices = asyncio.run(edge_tts.list_voices())
             voice_names = sorted([v['ShortName'] for v in voices])
-            logprint.info(f"成功获取 {len(voice_names)} 种语音")
+            logprint.info("成功获取 %d 种语音", len(voice_names))
             self.root.after(0, self.update_voice_ui, voice_names)
-        except Exception as e:
-            logprint.error(f"获取语音列表失败: {e}")
-            self.root.after(0, self.show_error, f"获取语音列表失败: {e}")
+        except (RuntimeError, asyncio.CancelledError, OSError) as e:
+            logprint.error("获取语音列表失败: %s", e)
+            self.root.after(0, self.show_error, "获取语音列表失败: %s", e)
 
     def update_voice_ui(self, voice_names):
+        """更新语音下拉列表并恢复历史配置。"""
         self.all_voice_names = voice_names
         self.filter_voices()
         saved_voice = self.saved_config.get("voice")
@@ -279,7 +333,8 @@ class TTSApp:
         self.search_entry.config(state=tk.NORMAL)
         logprint.info("语音列表UI更新完成")
 
-    def filter_voices(self, event=None):
+    def filter_voices(self, _event=None):
+        """过滤语音列表并更新下拉选项。"""
         keyword = self.search_var.get().strip().lower()
         if not keyword:
             self.voice_cb['values'] = self.all_voice_names
@@ -293,13 +348,13 @@ class TTSApp:
     def _extract_markdown_from_file(self, filepath):
         """根据扩展名提取内容并转换为 Markdown（保留层级结构）"""
         ext = os.path.splitext(filepath)[1].lower()
-        logprint.info(f"开始提取文件: {filepath}, 类型: {ext}")
+        logprint.info("开始提取文件: %s, 类型: %s", filepath, ext)
 
         # ---- TXT: 原样返回 ----
         if ext == '.txt' or ext =='.md':
             with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
-            logprint.info(f"TXT 文件读取完成，字符数: {len(content)}")
+            logprint.info("TXT 文件读取完成，字符数: %d", len(content))
             return content
 
         # ---- HTML: 使用 html2text 转为 Markdown ----
@@ -321,7 +376,7 @@ class TTSApp:
                     text = soup.get_text(separator='\n')
                     lines = [line.strip() for line in text.splitlines() if line.strip()]
                     result = '\n'.join(lines)
-                    logprint.info(f"HTML 纯文本提取完成，字符数: {len(result)}")
+                    logprint.info("HTML 纯文本提取完成，字符数: %d", len(result))
                     return result
                 except ImportError:
                     logprint.error("BeautifulSoup 也未安装，无法解析 HTML")
@@ -336,17 +391,17 @@ class TTSApp:
             h.ignore_emphasis = False
             h.ignore_tables = False
             markdown_text = h.handle(content)
-            logprint.info(f"HTML 转为 Markdown 完成，字符数: {len(markdown_text)}")
+            logprint.info("HTML 转为 Markdown 完成，字符数: %d", len(markdown_text))
             return markdown_text
 
         # ---- Word: 使用 python-docx 转换 ----
         elif ext == '.docx':
             try:
-                from docx import Document
-                from docx.oxml import CT_P
-                from docx.oxml.table import CT_Tbl
-                from docx.table import Table
-                from docx.text.paragraph import Paragraph
+                from docx import Document # pylint: disable=import-outside-toplevel
+                from docx.oxml import CT_P # pylint: disable=import-outside-toplevel
+                from docx.oxml.table import CT_Tbl # pylint: disable=import-outside-toplevel
+                from docx.table import Table # pylint: disable=import-outside-toplevel
+                from docx.text.paragraph import Paragraph # pylint: disable=import-outside-toplevel
 
                 doc = Document(filepath)
                 markdown_lines = []
@@ -394,7 +449,7 @@ class TTSApp:
                         markdown_lines.append('')
 
                 result = '\n'.join(markdown_lines)
-                logprint.info(f"Word 文档转换 Markdown 完成，段落数: {len(markdown_lines)}")
+                logprint.info("Word 文档转换 Markdown 完成，段落数: %d", len(markdown_lines))
                 return result
 
             except ImportError:
@@ -409,10 +464,13 @@ class TTSApp:
             # 未知类型，尝试直接读取
             with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
-            logprint.warning(f"未知文件类型 {ext}，直接读取文本内容")
+            logprint.warning("未知文件类型 %s，直接读取文本内容", ext)
             return content
 
     def load_file(self):
+        """ Open a file dialog to select a text, HTML, or Word document, 
+        extract its content, 
+        and display it in the text area. """
         filepath = filedialog.askopenfilename(
             title="选择文本、网页或 Word 文档",
             filetypes=[
@@ -427,7 +485,7 @@ class TTSApp:
         if not filepath:
             logprint.debug("用户取消文件选择")
             return
-        logprint.info(f"用户选择文件: {filepath}")
+        logprint.info("用户选择文件: %s", filepath)
         try:
             markdown_text = self._extract_markdown_from_file(filepath)
             self.text_area.delete("1.0", tk.END)
@@ -435,13 +493,13 @@ class TTSApp:
             self.status_var.set(f"已加载文件: {os.path.basename(filepath)}")
             self._update_line_numbers()
             self._update_preview()
-            logprint.info(f"文件加载成功，文本长度: {len(markdown_text)}")
-        except Exception as e:
-            logprint.error(f"加载文件异常: {e}", exc_info=True)
+            logprint.info("文件加载成功，文本长度: %d", len(markdown_text))
+        except (OSError, IOError, UnicodeDecodeError) as e:
+            logprint.error("加载文件异常: %s", e, exc_info=True)
             messagebox.showerror("读取错误", f"无法读取文件。\n错误信息: {e}")
 
     # ---------- Markdown 预览 ----------
-    def _on_text_change(self, event=None):
+    def _on_text_change(self, _event=None):
         self._update_line_numbers()
         if self.preview_after_id:
             self.root.after_cancel(self.preview_after_id)
@@ -464,8 +522,8 @@ class TTSApp:
                 """
                 self.preview.set_html(styled_html)
                 logprint.debug("预览渲染更新")
-            except Exception as e:
-                logprint.error(f"预览渲染错误: {e}")
+            except (TypeError, ValueError, AttributeError, tk.TclError) as e:
+                logprint.error("预览渲染错误: %s", e)
                 self.preview.set_html(f"<p style='color:red;'>渲染错误: {e}</p>")
         else:
             self.preview.set_html("<p style='color:gray;'>输入文本后实时预览</p>")
@@ -494,11 +552,12 @@ class TTSApp:
         text = re.sub(r'^\|[\s\-:]+\|$', '', text, flags=re.MULTILINE)
         text = re.sub(r'\n{3,}', '\n\n', text)
         cleaned = text.strip()
-        logprint.info(f"去除 Markdown 标记: 原长度 {original_len}, 新长度 {len(cleaned)}")
+        logprint.info("去除 Markdown 标记: 原长度 %d, 新长度 %d", original_len, len(cleaned))
         return cleaned
 
     # ---------- TTS 执行 ----------
     def start_tts(self):
+        """Start the text-to-speech process from the current text area content."""
         markdown_text = self.text_area.get("1.0", tk.END).strip()
         if not markdown_text:
             logprint.warning("用户尝试生成音频但文本框为空")
@@ -518,7 +577,7 @@ class TTSApp:
             messagebox.showwarning("提示", "去除格式后文本为空，请检查内容。")
             return
 
-        logprint.info(f"纯文本长度: {len(plain_text)}，准备生成音频")
+        logprint.info("纯文本长度: %s，准备生成音频", len(plain_text))
 
         filepath = filedialog.asksaveasfilename(
             title="保存音频文件",
@@ -539,10 +598,13 @@ class TTSApp:
         self.loading_pbar.start(10)
 
         self.status_var.set("正在将文本转写为音频，网络传输中...")
-        logprint.info(f"开始生成音频，目标文件: {filepath}")
-        threading.Thread(target=self.run_tts_thread, args=(plain_text, voice, filepath), daemon=True).start()
+        logprint.info("开始生成音频，目标文件: %s", filepath)
+        threading.Thread(target=self.run_tts_thread, 
+                        args=(plain_text, voice, filepath), 
+                        daemon=True).start()
 
     def stop_loading_effect(self):
+        """  Stop the loading progress bar and re-enable UI components."""
         self.loading_pbar.stop()
         self.loading_pbar.pack_forget()
         self.btn_generate.config(state=tk.NORMAL)
@@ -550,30 +612,47 @@ class TTSApp:
         self.search_entry.config(state=tk.NORMAL)
 
     def run_tts_thread(self, text, voice, filepath):
+        """ Run the TTS generation in a separate thread to avoid blocking the GUI.
+        Args:
+            text (str): The text to convert to speech.
+            voice (str): The voice to use for the TTS.
+            filepath (str): The path where the generated audio file will be saved.
+        """
         try:
             asyncio.run(self.generate_audio(text, voice, filepath))
             self.root.after(0, self.tts_success, filepath)
-        except Exception as e:
-            logprint.error(f"TTS 生成失败: {e}", exc_info=True)
+        except (TypeError, ValueError, AttributeError, tk.TclError) as e:
+            logprint.error("TTS 生成失败: %s", e, exc_info=True)
             self.root.after(0, self.show_error, f"生成音频失败:\n{e}")
 
     async def generate_audio(self, text, voice, filepath):
+        """Generate audio from text using edge_tts and save to the specified filepath."""
         communicate = edge_tts.Communicate(text, voice)
         await communicate.save(filepath)
 
     def tts_success(self, filepath):
+        """ Handle successful TTS generation by stopping loading effects and notifying the user.
+        Args:
+            filepath (str): The path where the generated audio file was saved.
+        """
         self.stop_loading_effect()
         self.status_var.set("音频生成完毕！")
-        logprint.info(f"音频生成成功，保存至: {filepath}")
+        logprint.info("音频生成成功，保存至: %s", filepath)
         messagebox.showinfo("成功", f"MP3 音频文件已成功保存到：\n{filepath}")
 
     def show_error(self, error_msg):
+        """Display an error message to the user and stop loading effects.
+
+        Args:
+            error_msg (str): The error message to display.
+        """
         self.stop_loading_effect()
         self.status_var.set("发生错误")
-        logprint.error(f"显示错误: {error_msg}")
+        logprint.error("显示错误: %s", error_msg)
         messagebox.showerror("错误", error_msg)
 
     def on_closing(self):
+        """Handle application close event by saving configuration and destroying the root window."""
         logprint.info("应用程序关闭")
         self.save_config_to_file()
         self.root.destroy()
