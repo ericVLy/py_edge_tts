@@ -45,7 +45,8 @@ jobs:
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install edge-tts beautifulsoup4 pyinstaller
+        pip install -r requirements.txt
+        pip install pyinstaller
 
     # 4. 执行 PyInstaller 打包
     # Windows 环境单独处理隐藏导入，Mac/Linux 使用通用命令
