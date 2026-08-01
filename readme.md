@@ -27,7 +27,7 @@
 在终端（或命令提示符）中运行以下命令安装必要的第三方依赖：
 
 ```bash
-pip install edge-tts beautifulsoup4
+pip install -r requirements.txt
 
 ```
 
